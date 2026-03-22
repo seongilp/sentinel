@@ -1,3 +1,5 @@
+import json
+from datetime import datetime, timezone
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -174,48 +176,77 @@ async def get_connection_info(
     connection_id: int,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    """연결된 DB의 스키마·테이블·컬럼 수를 반환한다."""
+    """캐시된 커넥션 정보를 반환한다. 없으면 null cached_at으로 반환."""
+    result = await db.execute(select(Connection).where(Connection.id == connection_id))
+    connection = result.scalar_one_or_none()
+    if connection is None:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    if not connection.info_cache:
+        return {"cached": False, "cached_at": None}
+    data = json.loads(connection.info_cache)
+    data["cached"] = True
+    data["cached_at"] = connection.info_cached_at.isoformat() if connection.info_cached_at else None
+    return data
+
+
+async def _fetch_and_cache_info(connection: Connection, db: AsyncSession) -> dict[str, Any]:
+    """실제 DB에 접속해 테이블/레코드 현황을 조회하고 캐시에 저장한다."""
+    from app.connectors.factory import create_connector
+    connector = create_connector(connection.db_type, {
+        "host": connection.host,
+        "port": connection.port,
+        "database": connection.database,
+        "username": connection.username,
+        "password": connection.encrypted_password,
+    })
+    schemas = await connector.list_schemas()
+    total_tables = 0
+    total_rows = 0
+    schema_details: list[dict] = []
+    for schema in schemas:
+        tables = await connector.list_tables(schema)
+        total_tables += len(tables)
+        table_details: list[dict] = []
+        for table in tables:
+            try:
+                row_count = await connector.count_rows(schema, table)
+            except Exception:
+                row_count = None
+            total_rows += row_count or 0
+            table_details.append({"name": table, "row_count": row_count})
+        schema_details.append({
+            "schema": schema,
+            "tables": len(tables),
+            "table_names": tables,
+            "table_details": table_details,
+        })
+    await connector.close()
+    data = {
+        "schemas": len(schemas),
+        "tables": total_tables,
+        "total_rows": total_rows,
+        "schema_details": schema_details,
+    }
+    connection.info_cache = json.dumps(data)
+    connection.info_cached_at = datetime.now(timezone.utc)
+    await db.commit()
+    data["cached"] = True
+    data["cached_at"] = connection.info_cached_at.isoformat()
+    return data
+
+
+@router.post("/{connection_id}/info/refresh")
+async def refresh_connection_info(
+    connection_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """실제 DB를 조회해 정보를 갱신하고 캐시에 저장한다."""
     result = await db.execute(select(Connection).where(Connection.id == connection_id))
     connection = result.scalar_one_or_none()
     if connection is None:
         raise HTTPException(status_code=404, detail="Connection not found")
     try:
-        from app.connectors.factory import create_connector
-        connector = create_connector(connection.db_type, {
-            "host": connection.host,
-            "port": connection.port,
-            "database": connection.database,
-            "username": connection.username,
-            "password": connection.encrypted_password,
-        })
-        schemas = await connector.list_schemas()
-        total_tables = 0
-        total_rows = 0
-        schema_details: list[dict] = []
-        for schema in schemas:
-            tables = await connector.list_tables(schema)
-            total_tables += len(tables)
-            table_details: list[dict] = []
-            for table in tables:
-                try:
-                    row_count = await connector.count_rows(schema, table)
-                except Exception:
-                    row_count = None
-                total_rows += row_count or 0
-                table_details.append({"name": table, "row_count": row_count})
-            schema_details.append({
-                "schema": schema,
-                "tables": len(tables),
-                "table_names": tables,
-                "table_details": table_details,
-            })
-        await connector.close()
-        return {
-            "schemas": len(schemas),
-            "tables": total_tables,
-            "total_rows": total_rows,
-            "schema_details": schema_details,
-        }
+        return await _fetch_and_cache_info(connection, db)
     except NotImplementedError:
         raise HTTPException(status_code=501, detail=f"{connection.db_type} 커넥터는 아직 지원되지 않습니다.")
     except Exception as e:

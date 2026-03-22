@@ -178,6 +178,23 @@ onMounted(async () => {
   await Promise.all([loadScans(), loadConnections()])
   loading.value = false
   if (hasRunning.value) startPolling()
+
+  // connection 페이지에서 "스캔하기" 버튼으로 진입 시 drawer 자동 오픈
+  const route = useRoute()
+  const connId = route.query.conn ? Number(route.query.conn) : null
+  if (connId && connections.value.some(c => c.id === connId)) {
+    const schema = route.query.schema ? decodeURIComponent(route.query.schema as string) : ''
+    form.value = {
+      connection_id: connId,
+      sample_size: 100,
+      confidence_threshold: 0.5,
+      target_schemas: schema,
+      scan_type: 'once',
+      cron_expression: '0 9 * * *',
+    }
+    formError.value = ''
+    drawerOpen.value = true
+  }
 })
 onUnmounted(stopPolling)
 </script>

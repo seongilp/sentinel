@@ -2,8 +2,11 @@
 import {
   Plus, Database, Trash2, Edit2, Zap,
   CheckCircle2, XCircle, Loader2, Eye, EyeOff,
-  X, ServerCrash, ChevronDown, ChevronUp, Table2, ScanSearch, Rows3
+  X, ServerCrash, Table2, ScanSearch, Rows3,
+  RefreshCw, Play, ArrowUpDown
 } from 'lucide-vue-next'
+
+const router = useRouter()
 
 interface Connection {
   id: number; name: string; db_type: string
@@ -39,19 +42,25 @@ const testing = ref(false)
 
 interface TableDetail { name: string; row_count: number | null }
 interface ConnInfo {
-  schemas: number; tables: number; total_rows: number
+  schemas: number; tables: number; total_rows: number; cached: boolean; cached_at: string | null
   schema_details: Array<{ schema: string; tables: number; table_names: string[]; table_details: TableDetail[] }>
 }
 const infoMap = ref<Record<number, ConnInfo | null>>({})
 const infoLoading = ref<Record<number, boolean>>({})
 const expandedInfo = ref<Record<number, boolean>>({})
 
-async function fetchInfo(id: number) {
-  infoLoading.value[id] = true
-  // 기존 데이터는 유지한 채 로딩 표시만
+async function loadCachedInfo(id: number) {
   try {
-    infoMap.value[id] = await $fetch<ConnInfo>(`/api/connections/${id}/info`)
-    expandedInfo.value[id] = true
+    const data = await $fetch<ConnInfo & { cached: boolean }>(`/api/connections/${id}/info`)
+    if (data.cached) infoMap.value[id] = data
+  } catch { /* ignore */ }
+}
+
+async function fetchInfo(id: number, expand = false) {
+  infoLoading.value[id] = true
+  try {
+    infoMap.value[id] = await $fetch<ConnInfo>(`/api/connections/${id}/info/refresh`, { method: 'POST' })
+    if (expand) expandedInfo.value[id] = true
   } catch {
     if (!infoMap.value[id]) infoMap.value[id] = null
   } finally {
@@ -61,10 +70,9 @@ async function fetchInfo(id: number) {
 
 function toggleInfo(id: number) {
   if (infoMap.value[id]) {
-    // 이미 데이터 있으면 expand 토글만
     expandedInfo.value[id] = !expandedInfo.value[id]
   } else if (!infoLoading.value[id]) {
-    fetchInfo(id)
+    fetchInfo(id, true)
   }
 }
 
@@ -79,8 +87,11 @@ function selectDbType(type: DbType) {
 
 async function loadConnections() {
   loading.value = true
-  try { connections.value = await $fetch<Connection[]>('/api/connections') }
-  finally { loading.value = false }
+  try {
+    connections.value = await $fetch<Connection[]>('/api/connections')
+    // 캐시된 info 병렬 로드 (빠름 - DB에서 읽기만)
+    await Promise.allSettled(connections.value.map(c => loadCachedInfo(c.id)))
+  } finally { loading.value = false }
 }
 
 function openDrawer(conn?: Connection) {
@@ -138,6 +149,47 @@ async function testSavedConnection(id: number) {
     testStatus.value[id] = result.success ? 'ok' : 'fail'
   } catch { testStatus.value[id] = 'fail' }
   setTimeout(() => { testStatus.value[id] = 'idle' }, 3000)
+}
+
+// ── Information section ──────────────────────────────────────────
+interface FlatRow {
+  connId: number; connName: string; dbType: string
+  schema: string; table: string; rowCount: number | null
+}
+
+const infoSectionLoading = ref(false)
+
+const flatRows = computed<FlatRow[]>(() => {
+  const rows: FlatRow[] = []
+  for (const conn of connections.value) {
+    const info = infoMap.value[conn.id]
+    if (!info) continue
+    for (const s of info.schema_details) {
+      for (const t of s.table_details) {
+        rows.push({ connId: conn.id, connName: conn.name, dbType: conn.db_type, schema: s.schema, table: t.name, rowCount: t.row_count })
+      }
+    }
+  }
+  return rows.sort((a, b) => (b.rowCount ?? -1) - (a.rowCount ?? -1))
+})
+
+const infoSectionLoaded = computed(() =>
+  connections.value.length > 0 && connections.value.some(c => infoMap.value[c.id] != null)
+)
+
+async function loadAllInfo() {
+  infoSectionLoading.value = true
+  await Promise.allSettled(connections.value.map(c => fetchInfo(c.id)))
+  infoSectionLoading.value = false
+}
+
+function formatCachedAt(iso: string | null): string {
+  if (!iso) return ''
+  return new Date(iso).toLocaleString('ko-KR', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
+function goScan(connId: number, schema: string, table: string) {
+  router.push(`/scans?conn=${connId}&schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}`)
 }
 
 onMounted(loadConnections)
@@ -201,55 +253,121 @@ onMounted(loadConnections)
           <p class="text-[12px] font-mono truncate" style="color: var(--muted-foreground);">{{ conn.host }}:{{ conn.port }}</p>
           <p class="text-[12px] mt-0.5 truncate" style="color: var(--muted-foreground);">{{ conn.database || '전체 DB' }} · {{ conn.username }}</p>
 
-          <!-- Info summary (when loaded) -->
-          <div v-if="infoMap[conn.id]" class="mt-3 flex items-center gap-2 flex-wrap">
-            <span class="info-chip"><Database class="w-3 h-3" /> {{ infoMap[conn.id]!.schemas }} schemas</span>
-            <span class="info-chip" style="color: var(--primary); background: color-mix(in oklch, var(--primary) 8%, transparent);">
-              <Table2 class="w-3 h-3" /> {{ infoMap[conn.id]!.tables }} tables
-            </span>
-            <span class="info-chip" style="color: #16a34a; background: rgba(22,163,74,0.08);">
-              <Rows3 class="w-3 h-3" /> {{ infoMap[conn.id]!.total_rows.toLocaleString() }} rows
-            </span>
-          </div>
-
-          <!-- Info expand toggle -->
-          <button v-if="infoMap[conn.id]" class="mt-2 flex items-center gap-1 text-[11px] transition-colors info-toggle"
-            @click.stop="expandedInfo[conn.id] = !expandedInfo[conn.id]">
-            <component :is="expandedInfo[conn.id] ? ChevronUp : ChevronDown" class="w-3 h-3" />
-            {{ expandedInfo[conn.id] ? '접기' : '상세 보기' }}
-          </button>
-
-          <!-- Schema detail breakdown -->
-          <div v-if="expandedInfo[conn.id] && infoMap[conn.id]" class="mt-2 space-y-1.5">
-            <div v-for="s in infoMap[conn.id]!.schema_details" :key="s.schema"
-              class="rounded-lg px-3 py-2" style="background: var(--background); border: 1px solid var(--border);">
-              <div class="flex items-center justify-between mb-1.5">
-                <span class="text-[11px] font-mono font-semibold" style="color: var(--foreground);">{{ s.schema }}</span>
-                <span class="text-[10px]" style="color: var(--muted-foreground);">{{ s.tables }} tables</span>
-              </div>
-              <div class="space-y-0.5">
-                <div v-for="t in s.table_details" :key="t.name"
-                  class="flex items-center justify-between px-1.5 py-0.5 rounded"
-                  style="background: var(--muted);">
-                  <span class="text-[10px] font-mono" style="color: var(--muted-foreground);">{{ t.name }}</span>
-                  <span class="text-[10px] font-mono" style="color: var(--muted-foreground);">
-                    {{ t.row_count !== null ? t.row_count.toLocaleString() + ' rows' : '—' }}
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
-
           <div class="flex items-center justify-between mt-3">
             <p class="text-[11px]" style="color: var(--muted-foreground);">
               Added {{ new Date(conn.created_at).toLocaleDateString('ko-KR') }}
             </p>
             <button class="preview-btn flex items-center gap-1.5"
-              @click.stop="infoMap[conn.id] ? fetchInfo(conn.id) : toggleInfo(conn.id)">
+              @click.stop="toggleInfo(conn.id)">
               <Loader2 v-if="infoLoading[conn.id]" class="w-3 h-3 animate-spin" />
               <ScanSearch v-else class="w-3 h-3" />
-              {{ infoLoading[conn.id] ? '조회 중...' : infoMap[conn.id] ? 'Refresh' : 'Preview' }}
+              {{ infoLoading[conn.id] ? '조회 중...' : 'Preview' }}
             </button>
+          </div>
+
+          <!-- Per-card preview panel -->
+          <div v-if="expandedInfo[conn.id] && infoMap[conn.id]" class="mt-3 rounded-xl overflow-hidden"
+            style="border: 1px solid var(--border); background: var(--background);">
+            <div class="px-3 py-2 flex items-center justify-between" style="border-bottom: 1px solid var(--border); background: var(--muted);">
+              <span class="text-[11px] font-semibold" style="color: var(--foreground);">
+                {{ infoMap[conn.id]!.tables }} tables · {{ infoMap[conn.id]!.total_rows.toLocaleString() }} rows
+              </span>
+              <span v-if="infoMap[conn.id]!.cached_at" class="text-[10px]" style="color: var(--muted-foreground);">
+                {{ formatCachedAt(infoMap[conn.id]!.cached_at) }} 기준
+              </span>
+            </div>
+            <div class="max-h-48 overflow-y-auto">
+              <div v-for="s in infoMap[conn.id]!.schema_details" :key="s.schema">
+                <div class="px-3 py-1.5 text-[10px] font-mono font-bold uppercase tracking-wide"
+                  style="background: var(--muted); color: var(--muted-foreground); border-bottom: 1px solid var(--border);">
+                  {{ s.schema }}
+                </div>
+                <div v-for="t in s.table_details" :key="t.name"
+                  class="flex items-center justify-between px-3 py-1.5"
+                  style="border-bottom: 1px solid var(--border);">
+                  <span class="text-[11px] font-mono" style="color: var(--foreground);">{{ t.name }}</span>
+                  <span class="text-[11px] font-mono font-semibold"
+                    :style="t.row_count !== null && t.row_count >= 10_000_000 ? 'color: #dc2626' : 'color: var(--muted-foreground)'">
+                    {{ t.row_count !== null ? t.row_count.toLocaleString() : '—' }}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- ── Information Section ── -->
+      <div v-if="connections.length > 0" class="mt-8">
+        <div class="flex items-center justify-between mb-4">
+          <div>
+            <h2 class="font-display text-[17px] font-bold tracking-tight" style="color: var(--foreground);">Information</h2>
+            <p class="text-[12px] mt-0.5" style="color: var(--muted-foreground);">전체 커넥션의 테이블 현황을 레코드 수 기준으로 정렬합니다.</p>
+          </div>
+          <button class="flex items-center gap-2 px-4 py-2 rounded-xl text-[12px] font-bold transition-all"
+            :disabled="infoSectionLoading"
+            style="border: 1px solid var(--border); background: var(--card); color: var(--foreground);"
+            @click="loadAllInfo">
+            <Loader2 v-if="infoSectionLoading" class="w-3.5 h-3.5 animate-spin" />
+            <RefreshCw v-else class="w-3.5 h-3.5" />
+            {{ infoSectionLoading ? '조회 중...' : infoSectionLoaded ? '새로고침' : '전체 조회' }}
+          </button>
+        </div>
+
+        <!-- Loading skeleton -->
+        <div v-if="infoSectionLoading && !infoSectionLoaded" class="space-y-2">
+          <div v-for="i in 5" :key="i" class="h-10 rounded-xl animate-pulse" style="background: var(--border);" />
+        </div>
+
+        <!-- Empty state -->
+        <div v-else-if="!infoSectionLoaded" class="flex flex-col items-center justify-center py-12 rounded-2xl"
+          style="border: 1px dashed var(--border); background: var(--card);">
+          <ArrowUpDown class="w-6 h-6 mb-3" style="color: var(--muted-foreground);" />
+          <p class="text-[13px] font-medium mb-1" style="color: var(--foreground);">테이블 현황이 없습니다</p>
+          <p class="text-[12px]" style="color: var(--muted-foreground);">'전체 조회' 버튼으로 모든 커넥션의 테이블 정보를 불러오세요.</p>
+        </div>
+
+        <!-- Table -->
+        <div v-else class="rounded-2xl overflow-hidden" style="border: 1px solid var(--border); background: var(--card);">
+          <table class="w-full text-[12px]">
+            <thead>
+              <tr style="border-bottom: 1px solid var(--border); background: var(--muted);">
+                <th class="px-4 py-3 text-left font-semibold" style="color: var(--muted-foreground);">Connection</th>
+                <th class="px-4 py-3 text-left font-semibold" style="color: var(--muted-foreground);">Schema / DB</th>
+                <th class="px-4 py-3 text-left font-semibold" style="color: var(--muted-foreground);">Table</th>
+                <th class="px-4 py-3 text-right font-semibold" style="color: var(--muted-foreground);">Records</th>
+                <th class="px-4 py-3 text-right font-semibold" style="color: var(--muted-foreground);"></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(row, idx) in flatRows" :key="`${row.connId}-${row.schema}-${row.table}`"
+                class="info-row transition-colors"
+                :style="idx % 2 === 1 ? 'background: color-mix(in oklch, var(--muted) 40%, transparent)' : ''">
+                <td class="px-4 py-2.5">
+                  <div class="flex items-center gap-2">
+                    <span class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-mono font-bold"
+                      :style="{ color: DB_TYPES[row.dbType as DbType]?.color, background: DB_TYPES[row.dbType as DbType]?.bg }">
+                      {{ row.dbType.toUpperCase() }}
+                    </span>
+                    <span class="font-medium truncate max-w-[140px]" style="color: var(--foreground);">{{ row.connName }}</span>
+                  </div>
+                </td>
+                <td class="px-4 py-2.5 font-mono" style="color: var(--muted-foreground);">{{ row.schema }}</td>
+                <td class="px-4 py-2.5 font-mono font-medium" style="color: var(--foreground);">{{ row.table }}</td>
+                <td class="px-4 py-2.5 text-right font-mono font-bold"
+                  :style="row.rowCount !== null && row.rowCount >= 10_000_000 ? 'color: #dc2626;' : 'color: var(--foreground);'">
+                  {{ row.rowCount !== null ? row.rowCount.toLocaleString() : '—' }}
+                </td>
+                <td class="px-4 py-2.5 text-right">
+                  <button class="scan-btn flex items-center gap-1.5 ml-auto"
+                    @click="goScan(row.connId, row.schema, row.table)">
+                    <Play class="w-3 h-3" /> 스캔하기
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="px-4 py-2.5 text-[11px]" style="border-top: 1px solid var(--border); color: var(--muted-foreground); background: var(--muted);">
+            총 {{ flatRows.length.toLocaleString() }}개 테이블 · {{ flatRows.reduce((s, r) => s + (r.rowCount ?? 0), 0).toLocaleString() }} rows
           </div>
         </div>
       </div>
@@ -433,6 +551,17 @@ onMounted(loadConnections)
   background: color-mix(in oklch, var(--primary) 12%, transparent);
   border-color: var(--primary);
 }
+
+.info-row:hover { background: color-mix(in oklch, var(--primary) 4%, transparent) !important; }
+
+.scan-btn {
+  font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 6px;
+  color: var(--primary); border: 1px solid color-mix(in oklch, var(--primary) 35%, transparent);
+  background: color-mix(in oklch, var(--primary) 6%, transparent);
+  transition: background 0.12s, border-color 0.12s;
+  white-space: nowrap;
+}
+.scan-btn:hover { background: color-mix(in oklch, var(--primary) 14%, transparent); border-color: var(--primary); }
 
 .fade-enter-active, .fade-leave-active { transition: opacity 0.18s; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
