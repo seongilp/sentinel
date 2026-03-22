@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"for i in $(seq 1 12); do\\n  status=$(docker inspect sentinel-clickhouse --format '{{.State.Health.Status}}' 2>/dev/null)\\n  echo \\\"[$i] $status\\\"\\n  [ \\\"$status\\\" = \\\"healthy\\\" ] && break\\...",
+  "error": "Exit code 1\n(eval):2: read-only variable: status",
+  "timestamp": "2026-03-22T01:29:18.421Z",
+  "retry_count": 1
+}
