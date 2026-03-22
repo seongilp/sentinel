@@ -10,7 +10,6 @@ from app.config import settings
 from app.database import create_tables, AsyncSessionLocal
 from app.models.rule import Rule
 from app.models.setting import Setting
-from app.models.deep_inspect import DeepInspectJob, DeepInspectMatch
 
 from app.api import (
     connections,

@@ -1,4 +1,3 @@
-import asyncio
 import json
 from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,7 +28,7 @@ async def run_scan(scan_id: int) -> None:
             await db.commit()
             return
 
-        rule_result = await db.execute(select(Rule).where(Rule.is_active == True))
+        rule_result = await db.execute(select(Rule).where(Rule.is_active))
         rules = list(rule_result.scalars().all())
 
         scan.status = "running"

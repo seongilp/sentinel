@@ -4,7 +4,6 @@ import logging
 import re
 from datetime import datetime, timezone
 
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import AsyncSessionLocal
 from app.models.connection import Connection
