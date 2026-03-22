@@ -2,7 +2,7 @@
 import {
   Microscope, Database, Table2, Columns, Play, Square,
   Loader2, CheckCircle2, XCircle, AlertTriangle, RefreshCw,
-  ChevronRight, SlidersHorizontal, Eye, RotateCcw, Filter
+  ChevronRight, SlidersHorizontal, Eye, RotateCcw, Filter, BarChart2
 } from 'lucide-vue-next'
 
 interface Connection { id: number; name: string; db_type: string; host: string }
@@ -115,7 +115,12 @@ async function onTableChange() {
       `/api/connections/${selectedConn.value}/columns?schema=${selectedSchema.value}&table=${selectedTable.value}`
     )
     columns.value = cols
-    selectedColumns.value = cols.map(c => c.column_name)
+    const qcol = route.query.column as string | undefined
+    if (qcol && cols.some(c => c.column_name === qcol)) {
+      selectedColumns.value = [qcol]
+    } else {
+      selectedColumns.value = cols.map(c => c.column_name)
+    }
   } catch {
     // fallback: empty (service will fetch on run)
     columns.value = []
@@ -151,8 +156,34 @@ const canStart = computed(() =>
   selectedConn.value && selectedSchema.value && selectedTable.value
 )
 
+// ── Row count check ─────────────────────────────────────────────────────────
+const checkingCount = ref(false)
+const rowCount = ref<number | null>(null)
+const showLargeConfirm = ref(false)
+const LARGE_ROW_THRESHOLD = 10_000_000
+
+async function checkRowCount() {
+  if (!canStart.value) return
+  checkingCount.value = true
+  rowCount.value = null
+  try {
+    const res = await $fetch<{ count: number }>(
+      `/api/connections/${selectedConn.value}/count?schema=${selectedSchema.value}&table=${selectedTable.value}`
+    )
+    rowCount.value = res.count
+    if (res.count >= LARGE_ROW_THRESHOLD) showLargeConfirm.value = true
+  } finally {
+    checkingCount.value = false
+  }
+}
+
+function confirmAndStart(limit?: number) {
+  showLargeConfirm.value = false
+  startJob(limit)
+}
+
 // ── Start job ──────────────────────────────────────────────────────────────
-async function startJob() {
+async function startJob(limit?: number) {
   if (!canStart.value) return
   starting.value = true
   try {
@@ -164,6 +195,7 @@ async function startJob() {
         table_name: selectedTable.value,
         columns: allColumnsSelected.value ? [] : selectedColumns.value,
         batch_size: batchSize.value,
+        ...(limit ? { row_limit: limit } : {}),
       }
     })
     activeJob.value = job
@@ -246,13 +278,7 @@ async function logDeepInspect(job: Job) {
       menu: 'deep-inspect',
       entity_type: 'deep_inspect_job',
       entity_id: job.id,
-      details: {
-        schema: job.schema_name,
-        table: job.table_name,
-        pii_matches: job.pii_matches,
-        total_rows: job.total_rows,
-        connection: conn?.name ?? String(job.connection_id),
-      },
+      details: `${conn?.name ?? job.connection_id} / ${job.schema_name}.${job.table_name} 검사 완료 — 전체 ${job.total_rows}행 중 PII ${job.pii_matches}건 탐지`,
     },
   }).catch(() => {})
 }
@@ -454,7 +480,7 @@ watch(schemaInfo, (info) => {
 
       <!-- ── STEP: CONFIG ─────────────────────────────────────────────── -->
       <template v-if="step === 'config'">
-        <div class="p-5" style="max-width: 700px;">
+        <div class="p-5">
 
           <!-- Header + warning inline -->
           <div class="flex items-start justify-between gap-4 mb-5">
@@ -465,7 +491,7 @@ watch(schemaInfo, (info) => {
             <div class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg flex-shrink-0"
               style="background: #fffbeb; border: 1px solid #fde68a;">
               <AlertTriangle class="w-3.5 h-3.5 flex-shrink-0" style="color: #d97706;" />
-              <p class="text-[11px]" style="color: #92400e;">프로덕션 점검 시간대 권장</p>
+              <p class="text-[11px]" style="color: #92400e;">풀 스캔은 DB에 부하를 줄 수 있으니 DBA와 사전에 상의 필요</p>
             </div>
           </div>
 
@@ -613,6 +639,27 @@ watch(schemaInfo, (info) => {
                     >{{ size.toLocaleString() }}</button>
                   </div>
                 </div>
+                <!-- 데이터 크기 확인 -->
+                <div class="flex items-center gap-2 flex-shrink-0">
+                  <button
+                    @click="checkRowCount"
+                    :disabled="!canStart || checkingCount"
+                    class="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-[13px] font-semibold transition-all"
+                    style="border: 1px solid var(--border); background: var(--card); color: var(--foreground);"
+                    :style="{ opacity: !canStart ? '0.5' : '1' }"
+                  >
+                    <Loader2 v-if="checkingCount" class="w-3.5 h-3.5 animate-spin" />
+                    <BarChart2 v-else class="w-3.5 h-3.5" />
+                    {{ checkingCount ? '확인 중...' : '데이터 크기 확인' }}
+                  </button>
+                  <span v-if="rowCount !== null" class="text-[12px] font-semibold px-2.5 py-1 rounded-lg flex-shrink-0"
+                    :style="rowCount >= LARGE_ROW_THRESHOLD
+                      ? 'background: #fef2f2; color: #dc2626;'
+                      : 'background: #f0fdf4; color: #16a34a;'">
+                    {{ rowCount.toLocaleString() }}행
+                  </span>
+                </div>
+
                 <button
                   @click="startJob"
                   :disabled="!canStart || starting"
@@ -624,6 +671,54 @@ watch(schemaInfo, (info) => {
                   <Microscope v-else class="w-4 h-4" />
                   {{ starting ? '시작 중...' : '검사 시작' }}
                 </button>
+
+                <!-- 천만건 이상 확인 다이얼로그 -->
+                <Teleport to="body">
+                  <div v-if="showLargeConfirm" class="fixed inset-0 z-50 flex items-center justify-center" style="background: rgba(0,0,0,0.4);">
+                    <div class="rounded-2xl shadow-2xl overflow-hidden" style="background: var(--card); border: 1px solid var(--border); width: 480px;">
+                      <!-- Header -->
+                      <div class="px-6 py-5 flex items-center gap-4" style="border-bottom: 1px solid var(--border); background: #fef2f2;">
+                        <div class="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" style="background: #fee2e2;">
+                          <AlertTriangle class="w-5 h-5" style="color: #dc2626;" />
+                        </div>
+                        <div>
+                          <p class="font-bold text-[15px]" style="color: #991b1b;">대용량 테이블 경고</p>
+                          <p class="text-[12px] mt-0.5" style="color: #dc2626;">{{ rowCount?.toLocaleString() }}행 — 천만 건 이상입니다</p>
+                        </div>
+                      </div>
+                      <!-- Body -->
+                      <div class="px-6 py-4">
+                        <p class="text-[13px] leading-relaxed" style="color: var(--muted-foreground);">
+                          전체 데이터를 검사하면 DB에 상당한 부하가 발생할 수 있습니다.<br>DBA와 사전 협의 후 진행하세요.
+                        </p>
+                      </div>
+                      <!-- Actions -->
+                      <div class="px-6 py-4 flex items-center gap-2" style="border-top: 1px solid var(--border); background: var(--muted, #f9fafb);">
+                        <button @click="showLargeConfirm = false"
+                          class="px-3.5 py-2 rounded-lg text-[12px] font-semibold transition-colors"
+                          style="border: 1px solid var(--border); color: var(--muted-foreground); background: var(--card);">
+                          취소
+                        </button>
+                        <div class="flex-1" />
+                        <button @click="confirmAndStart(100_000)"
+                          class="px-3.5 py-2 rounded-lg text-[12px] font-bold transition-colors"
+                          style="background: #eff6ff; color: #2563eb; border: 1px solid #bfdbfe;">
+                          10만건
+                        </button>
+                        <button @click="confirmAndStart(1_000_000)"
+                          class="px-3.5 py-2 rounded-lg text-[12px] font-bold transition-colors"
+                          style="background: #fff7ed; color: #ea580c; border: 1px solid #fed7aa;">
+                          100만건
+                        </button>
+                        <button @click="confirmAndStart()"
+                          class="px-3.5 py-2 rounded-lg text-[12px] font-bold transition-colors"
+                          style="background: #dc2626; color: white;">
+                          전체 검사
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </Teleport>
               </div>
             </template>
 

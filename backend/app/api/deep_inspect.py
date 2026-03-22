@@ -13,8 +13,9 @@ router = APIRouter(prefix="/deep-inspect", tags=["deep-inspect"])
 
 def _to_read(job: DeepInspectJob) -> JobRead:
     pct = 0.0
-    if job.total_rows and job.total_rows > 0:
-        pct = round(job.scanned_rows / job.total_rows * 100, 1)
+    denom = job.row_limit if job.row_limit else job.total_rows
+    if denom and denom > 0:
+        pct = round(min(job.scanned_rows / denom * 100, 100.0), 1)
     return JobRead(
         id=job.id,
         connection_id=job.connection_id,
@@ -23,6 +24,7 @@ def _to_read(job: DeepInspectJob) -> JobRead:
         columns=json.loads(job.columns) if job.columns else [],
         status=job.status,
         batch_size=job.batch_size,
+        row_limit=job.row_limit,
         total_rows=job.total_rows,
         scanned_rows=job.scanned_rows,
         pii_matches=job.pii_matches,
@@ -52,6 +54,7 @@ async def create_job(
         table_name=payload.table_name,
         columns=json.dumps(payload.columns),
         batch_size=max(100, min(payload.batch_size, 10000)),
+        row_limit=payload.row_limit,
     )
     db.add(job)
     await db.commit()

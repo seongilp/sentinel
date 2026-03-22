@@ -15,6 +15,7 @@ class DeepInspectJob(Base):
     columns: Mapped[str] = mapped_column(Text, default="[]")  # JSON list
     status: Mapped[str] = mapped_column(String(20), default="pending")  # pending/running/completed/failed/cancelled
     batch_size: Mapped[int] = mapped_column(Integer, default=1000)
+    row_limit: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     total_rows: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     scanned_rows: Mapped[int] = mapped_column(Integer, default=0)
     pii_matches: Mapped[int] = mapped_column(Integer, default=0)
@@ -43,6 +44,7 @@ class JobCreate(BaseModel):
     table_name: str
     columns: list[str] = []  # empty = all columns
     batch_size: int = 1000
+    row_limit: Optional[int] = None
 
 
 class JobRead(BaseModel):
@@ -53,6 +55,7 @@ class JobRead(BaseModel):
     columns: list[str]
     status: str
     batch_size: int
+    row_limit: Optional[int]
     total_rows: Optional[int]
     scanned_rows: int
     pii_matches: int

@@ -2,7 +2,7 @@
 import {
   Plus, Database, Trash2, Edit2, Zap,
   CheckCircle2, XCircle, Loader2, Eye, EyeOff,
-  X, ServerCrash, ChevronDown, ChevronUp, Table2, FlaskConical
+  X, ServerCrash, ChevronDown, ChevronUp, Table2, ScanSearch, Rows3
 } from 'lucide-vue-next'
 
 interface Connection {
@@ -37,9 +37,10 @@ const formError = ref('')
 const testResult = ref<{ success: boolean; message: string } | null>(null)
 const testing = ref(false)
 
+interface TableDetail { name: string; row_count: number | null }
 interface ConnInfo {
-  schemas: number; tables: number
-  schema_details: Array<{ schema: string; tables: number; table_names: string[] }>
+  schemas: number; tables: number; total_rows: number
+  schema_details: Array<{ schema: string; tables: number; table_names: string[]; table_details: TableDetail[] }>
 }
 const infoMap = ref<Record<number, ConnInfo | null>>({})
 const infoLoading = ref<Record<number, boolean>>({})
@@ -47,20 +48,24 @@ const expandedInfo = ref<Record<number, boolean>>({})
 
 async function fetchInfo(id: number) {
   infoLoading.value[id] = true
+  // 기존 데이터는 유지한 채 로딩 표시만
   try {
     infoMap.value[id] = await $fetch<ConnInfo>(`/api/connections/${id}/info`)
+    expandedInfo.value[id] = true
   } catch {
-    infoMap.value[id] = null
+    if (!infoMap.value[id]) infoMap.value[id] = null
   } finally {
     infoLoading.value[id] = false
   }
 }
 
 function toggleInfo(id: number) {
-  if (!infoMap.value[id] && !infoLoading.value[id]) {
+  if (infoMap.value[id]) {
+    // 이미 데이터 있으면 expand 토글만
+    expandedInfo.value[id] = !expandedInfo.value[id]
+  } else if (!infoLoading.value[id]) {
     fetchInfo(id)
   }
-  expandedInfo.value[id] = !expandedInfo.value[id]
 }
 
 const form = ref<FormData>({ name: '', db_type: 'mysql', host: '', port: 3306, database: '', username: '', password: '' })
@@ -197,10 +202,13 @@ onMounted(loadConnections)
           <p class="text-[12px] mt-0.5 truncate" style="color: var(--muted-foreground);">{{ conn.database || '전체 DB' }} · {{ conn.username }}</p>
 
           <!-- Info summary (when loaded) -->
-          <div v-if="infoMap[conn.id]" class="mt-3 flex items-center gap-3">
+          <div v-if="infoMap[conn.id]" class="mt-3 flex items-center gap-2 flex-wrap">
             <span class="info-chip"><Database class="w-3 h-3" /> {{ infoMap[conn.id]!.schemas }} schemas</span>
             <span class="info-chip" style="color: var(--primary); background: color-mix(in oklch, var(--primary) 8%, transparent);">
               <Table2 class="w-3 h-3" /> {{ infoMap[conn.id]!.tables }} tables
+            </span>
+            <span class="info-chip" style="color: #16a34a; background: rgba(22,163,74,0.08);">
+              <Rows3 class="w-3 h-3" /> {{ infoMap[conn.id]!.total_rows.toLocaleString() }} rows
             </span>
           </div>
 
@@ -215,16 +223,19 @@ onMounted(loadConnections)
           <div v-if="expandedInfo[conn.id] && infoMap[conn.id]" class="mt-2 space-y-1.5">
             <div v-for="s in infoMap[conn.id]!.schema_details" :key="s.schema"
               class="rounded-lg px-3 py-2" style="background: var(--background); border: 1px solid var(--border);">
-              <div class="flex items-center justify-between mb-1">
+              <div class="flex items-center justify-between mb-1.5">
                 <span class="text-[11px] font-mono font-semibold" style="color: var(--foreground);">{{ s.schema }}</span>
                 <span class="text-[10px]" style="color: var(--muted-foreground);">{{ s.tables }} tables</span>
               </div>
-              <div class="flex flex-wrap gap-1">
-                <span v-for="t in s.table_names" :key="t"
-                  class="text-[10px] font-mono px-1.5 py-0.5 rounded"
-                  style="background: var(--muted); color: var(--muted-foreground);">
-                  {{ t }}
-                </span>
+              <div class="space-y-0.5">
+                <div v-for="t in s.table_details" :key="t.name"
+                  class="flex items-center justify-between px-1.5 py-0.5 rounded"
+                  style="background: var(--muted);">
+                  <span class="text-[10px] font-mono" style="color: var(--muted-foreground);">{{ t.name }}</span>
+                  <span class="text-[10px] font-mono" style="color: var(--muted-foreground);">
+                    {{ t.row_count !== null ? t.row_count.toLocaleString() + ' rows' : '—' }}
+                  </span>
+                </div>
               </div>
             </div>
           </div>
@@ -233,10 +244,11 @@ onMounted(loadConnections)
             <p class="text-[11px]" style="color: var(--muted-foreground);">
               Added {{ new Date(conn.created_at).toLocaleDateString('ko-KR') }}
             </p>
-            <button class="dryrun-btn flex items-center gap-1.5" @click.stop="toggleInfo(conn.id)">
+            <button class="preview-btn flex items-center gap-1.5"
+              @click.stop="infoMap[conn.id] ? fetchInfo(conn.id) : toggleInfo(conn.id)">
               <Loader2 v-if="infoLoading[conn.id]" class="w-3 h-3 animate-spin" />
-              <FlaskConical v-else class="w-3 h-3" />
-              {{ infoLoading[conn.id] ? 'Scanning...' : infoMap[conn.id] ? 'Re-run' : 'Dry Run' }}
+              <ScanSearch v-else class="w-3 h-3" />
+              {{ infoLoading[conn.id] ? '조회 중...' : infoMap[conn.id] ? 'Refresh' : 'Preview' }}
             </button>
           </div>
         </div>
@@ -411,13 +423,13 @@ onMounted(loadConnections)
 }
 .info-toggle:hover { color: var(--foreground); }
 
-.dryrun-btn {
+.preview-btn {
   font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 7px;
   color: var(--primary); border: 1px solid color-mix(in oklch, var(--primary) 35%, transparent);
   background: color-mix(in oklch, var(--primary) 6%, transparent);
   transition: border-color 0.12s, background 0.12s, opacity 0.12s;
 }
-.dryrun-btn:hover {
+.preview-btn:hover {
   background: color-mix(in oklch, var(--primary) 12%, transparent);
   border-color: var(--primary);
 }

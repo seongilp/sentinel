@@ -190,18 +190,61 @@ async def get_connection_info(
         })
         schemas = await connector.list_schemas()
         total_tables = 0
+        total_rows = 0
         schema_details: list[dict] = []
         for schema in schemas:
             tables = await connector.list_tables(schema)
             total_tables += len(tables)
-            schema_details.append({"schema": schema, "tables": len(tables), "table_names": tables})
+            table_details: list[dict] = []
+            for table in tables:
+                try:
+                    row_count = await connector.count_rows(schema, table)
+                except Exception:
+                    row_count = None
+                total_rows += row_count or 0
+                table_details.append({"name": table, "row_count": row_count})
+            schema_details.append({
+                "schema": schema,
+                "tables": len(tables),
+                "table_names": tables,
+                "table_details": table_details,
+            })
         await connector.close()
         return {
             "schemas": len(schemas),
             "tables": total_tables,
+            "total_rows": total_rows,
             "schema_details": schema_details,
         }
     except NotImplementedError:
         raise HTTPException(status_code=501, detail=f"{connection.db_type} 커넥터는 아직 지원되지 않습니다.")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.get("/{connection_id}/count")
+async def get_table_row_count(
+    connection_id: int,
+    schema: str,
+    table: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """테이블의 전체 행 수를 반환한다."""
+    result = await db.execute(select(Connection).where(Connection.id == connection_id))
+    connection = result.scalar_one_or_none()
+    if connection is None:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    try:
+        from app.connectors.factory import create_connector
+        connector = create_connector(connection.db_type, {
+            "host": connection.host,
+            "port": connection.port,
+            "database": connection.database,
+            "username": connection.username,
+            "password": connection.encrypted_password,
+        })
+        count = await connector.count_rows(schema, table)
+        await connector.close()
+        return {"count": count}
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))

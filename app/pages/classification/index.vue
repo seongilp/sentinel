@@ -27,7 +27,7 @@ function openPopover(item: Classification) {
   const connId = connections.value.find(c => c.id === item.connection_id)?.id
     ?? connections.value[0]?.id
   if (connId) {
-    router.push(`/deep-inspect?schema=${item.schema_name}&table=${item.table_name}&conn=${connId}`)
+    router.push(`/deep-inspect?schema=${item.schema_name}&table=${item.table_name}&conn=${connId}&column=${item.column_name}`)
   } else {
     // No connection available — fall back to popover
     popoverItemId.value = popoverItemId.value === item.id ? null : item.id
@@ -40,7 +40,7 @@ function startDeepInspect(item: Classification) {
   closePopover()
   const connId = popoverConnId.value ?? connections.value[0]?.id
   if (!connId) return
-  router.push(`/deep-inspect?schema=${item.schema_name}&table=${item.table_name}&conn=${connId}`)
+  router.push(`/deep-inspect?schema=${item.schema_name}&table=${item.table_name}&conn=${connId}&column=${item.column_name}`)
 }
 
 const piiColor: Record<string, string> = {

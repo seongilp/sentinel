@@ -88,19 +88,21 @@ async def run_job(job_id: int) -> None:
             job.total_rows = total
             await db.commit()
 
+            scan_limit = job.row_limit if job.row_limit else total
             offset = 0
             scanned = 0
             match_count = 0
             batch_size = job.batch_size
 
-            while offset < total:
+            while offset < scan_limit:
                 # Check for cancellation
                 await db.refresh(job)
                 if job.status == "cancelled":
                     break
 
                 rows = await connector.fetch_rows(
-                    job.schema_name, job.table_name, columns, batch_size, offset
+                    job.schema_name, job.table_name, columns,
+                    min(batch_size, scan_limit - offset), offset
                 )
                 if not rows:
                     break
