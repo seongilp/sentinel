@@ -1,6 +1,6 @@
 services:
   clickhouse:
-    image: clickhouse/clickhouse-server:24.12
+    image: clickhouse/clickhouse-server:26.10
     container_name: sentinel-clickhouse
     ports:
       - "8123:8123"   # HTTP interface
